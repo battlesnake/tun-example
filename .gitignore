@@ -1,2 +1,4 @@
-tun
-*.o
+.bin
+.tmp
+bin
+tmp
