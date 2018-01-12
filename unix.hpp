@@ -24,7 +24,8 @@ namespace Unix {
 
 /* Error handling */
 
-struct SystemError : std::runtime_error
+struct SystemError :
+	std::runtime_error
 {
 	int code;
 	static std::string make_message(const std::string& message, int code)
@@ -54,7 +55,8 @@ struct SystemError : std::runtime_error
 	}
 };
 
-struct SysCallFailed : SystemError
+struct SysCallFailed :
+	SystemError
 {
 	static std::string make_message(const std::string& call, int code)
 	{
@@ -129,15 +131,28 @@ struct FD
 
 /* Syscall implementations */
 
-struct FileDescriptor : virtual FD, Closeable
+struct FileDescriptor :
+	virtual FD,
+	Closeable
 {
 private:
 	int fd;
 public:
-	virtual int get() const override { return fd; }
-	FileDescriptor(int fd) : fd(fd) { }
-	FileDescriptor() : FileDescriptor(-1) { }
-	FileDescriptor(int fd, const std::string& call) : FileDescriptor(fd) {
+	virtual int get() const override
+	{
+		return fd;
+	}
+	FileDescriptor(int fd) :
+		fd(fd)
+	{
+	}
+	FileDescriptor() :
+		FileDescriptor(-1)
+	{
+	}
+	FileDescriptor(int fd, const std::string& call) :
+		FileDescriptor(fd)
+	{
 		assert_not_negative(call, fd);
 		if (fd == -1) {
 			throw SysCallFailed(call);
@@ -150,13 +165,18 @@ public:
 	{
 		std::swap(fd, f.fd);
 	}
-	void operator = (FileDescriptor&& f) {
+	void operator = (FileDescriptor&& f)
+	{
 		close();
 		std::swap(fd, f.fd);
 	}
-	~FileDescriptor() { close(); }
+	~FileDescriptor()
+	{
+		close();
+	}
 
-	void close() {
+	void close()
+	{
 		if (fd != -1) {
 			if (::close(fd)) {
 				throw SysCallFailed("close");
@@ -193,7 +213,8 @@ public:
 		}
 		assert_not_negative("fcntl (F_SETFL)", fcntl(fd, F_SETFL, flags));
 	}
-	FileDescriptor dup(int target = -1) {
+	FileDescriptor dup(int target = -1)
+	{
 		if (target == -1) {
 			return { ::dup(fd), "dup" };
 		} else {
@@ -202,12 +223,16 @@ public:
 	}
 };
 
-struct ReadableFileDescriptor : virtual FD, Readable
+struct ReadableFileDescriptor :
+	virtual FD,
+	Readable
 {
-	size_t read(void *buf, size_t size) override {
+	size_t read(void *buf, size_t size) override
+	{
 		return assert_not_negative("read", ::read(get(), buf, size));
 	}
-	std::optional<size_t> try_read(void *buf, size_t size) override {
+	std::optional<size_t> try_read(void *buf, size_t size) override
+	{
 		auto res = ::read(get(), buf, size);
 		if (res < 0) {
 			return std::nullopt;
@@ -216,12 +241,16 @@ struct ReadableFileDescriptor : virtual FD, Readable
 	}
 };
 
-struct WritableFileDescriptor : virtual FD, Writable
+struct WritableFileDescriptor :
+	virtual FD,
+	Writable
 {
-	size_t write(const void *buf, size_t size) override {
+	size_t write(const void *buf, size_t size) override
+	{
 		return assert_not_negative("write", ::write(get(), buf, size));
 	}
-	std::optional<size_t> try_write(const void *buf, size_t size) override {
+	std::optional<size_t> try_write(const void *buf, size_t size) override
+	{
 		auto res = ::write(get(), buf, size);
 		if (res < 0) {
 			return std::nullopt;
@@ -230,7 +259,9 @@ struct WritableFileDescriptor : virtual FD, Writable
 	}
 };
 
-struct SeekableFileDescriptor : virtual FD, Seekable
+struct SeekableFileDescriptor :
+	virtual FD,
+	Seekable
 {
 	size_t seek(ssize_t displacement, SeekOrigin origin = seek_start) override
 	{
@@ -268,11 +299,19 @@ enum FileFlags
 	file_path = O_PATH
 };
 
-struct File : FileDescriptor, ReadableFileDescriptor, WritableFileDescriptor, SeekableFileDescriptor
+struct File :
+	FileDescriptor,
+	ReadableFileDescriptor,
+	WritableFileDescriptor,
+	SeekableFileDescriptor
 {
 	using Stats = struct stat;
 	File(const std::string& path, FileAccessMode access_mode, FileFlags file_flags, Flags flags = Flags::none, int mode = 000) :
 		FileDescriptor(construct(path.c_str(), access_mode, file_flags, flags, mode), "open")
+	{
+	}
+	File(const std::string& path, int flags, int mode) :
+		FileDescriptor(open(path.c_str(), flags, mode), "open")
 	{
 	}
 	Stats stat()
@@ -298,7 +337,8 @@ private:
 };
 
 template <typename Block>
-struct BlockFile : File
+struct BlockFile :
+	File
 {
 	using block_type = Block;
 	static constexpr auto block_size = sizeof(Block);
@@ -330,60 +370,79 @@ struct BlockFile : File
 	}
 };
 
-struct Pipe : Readable, Writable, Closeable
+struct Pipe :
+	Readable,
+	Writable,
+	Closeable
 {
-	struct Input : FileDescriptor, WritableFileDescriptor
+	struct Input :
+		FileDescriptor,
+		WritableFileDescriptor
 	{
 		using FileDescriptor::FileDescriptor;
 		using FileDescriptor::operator =;
 	};
-	struct Output : FileDescriptor, ReadableFileDescriptor
+	struct Output :
+		FileDescriptor,
+		ReadableFileDescriptor
 	{
 		using FileDescriptor::FileDescriptor;
 		using FileDescriptor::operator =;
 	};
 	Output output;
 	Input input;
-	Pipe() {
+	Pipe()
+	{
 		int p[2];
 		assert_zero("pipe2", ::pipe2(p, O_NONBLOCK));
 		output = Output{ p[0], "pipe2" };
 		input = Input{ p[1], "pipe2" };
 	}
-	size_t read(void *buf, size_t size) {
+	size_t read(void *buf, size_t size)
+	{
 		return output.read(buf, size);
 	}
-	size_t write(const void *buf, size_t size) {
+	size_t write(const void *buf, size_t size)
+	{
 		return input.write(buf, size);
 	}
-	std::optional<size_t> try_read(void *buf, size_t size) {
+	std::optional<size_t> try_read(void *buf, size_t size)
+	{
 		return output.try_read(buf, size);
 	}
-	std::optional<size_t> try_write(const void *buf, size_t size) {
+	std::optional<size_t> try_write(const void *buf, size_t size)
+	{
 		return input.try_write(buf, size);
 	}
-	void close() {
+	void close()
+	{
 		input.close();
 		output.close();
 	}
 };
 
-struct EventFD : FileDescriptor, private Readable, private Writable
+struct EventFD :
+	FileDescriptor,
+	private Readable,
+	private Writable
 {
 	EventFD(unsigned int initial_value, bool semaphore, Flags flags) :
 		FileDescriptor(eventfd(initial_value, (semaphore ? EFD_SEMAPHORE : 0) | (flags & Flags::non_blocking ? EFD_NONBLOCK : 0) | (flags & Flags::close_on_exec ? EFD_CLOEXEC : 0)), "eventfd")
 	{
 	}
 protected:
-	uint64_t event_read() {
+	uint64_t event_read()
+	{
 		uint64_t amount;
 		read(&amount, sizeof(amount));
 		return amount;
 	}
-	void event_write(uint64_t amount) {
+	void event_write(uint64_t amount)
+	{
 		write(&amount, sizeof(amount));
 	}
-	std::optional<uint64_t> try_event_read() {
+	std::optional<uint64_t> try_event_read()
+	{
 		uint64_t amount;
 		auto ret = try_read(&amount, sizeof(amount));
 		if (ret.has_value()) {
@@ -395,25 +454,30 @@ protected:
 };
 
 /* Classic semaphore */
-struct Semaphore : EventFD
+struct Semaphore :
+	EventFD
 {
 	Semaphore(unsigned int initial_value = 0, Flags flags = Flags::none) :
 		EventFD(initial_value, true, flags)
 	{
 	}
-	void take() {
+	void take()
+	{
 		event_read();
 	}
-	void give(uint64_t amount = 1) {
+	void give(uint64_t amount = 1)
+	{
 		event_write(amount);
 	}
-	bool try_take() {
+	bool try_take()
+	{
 		return try_event_read().has_value();
 	}
 };
 
 /* Counter, reads reset on success and block or fail if counter is zero */
-class Counter : EventFD
+class Counter :
+	EventFD
 {
 	Counter(unsigned int initial_value = 0, Flags flags = Flags::none) :
 		EventFD(initial_value, false, flags)
@@ -508,8 +572,14 @@ struct SignalSet
 	sigset_t value;
 	static const SignalSet empty;
 	static const SignalSet full;
-	const sigset_t& get() const { return value; }
-	SignalSet(const sigset_t& value) : value(value) { }
+	const sigset_t& get() const
+	{
+		return value;
+	}
+	SignalSet(const sigset_t& value) :
+		value(value)
+	{
+	}
 	SignalSet(const SignalSet&) = default;
 	SignalSet& operator =(const SignalSet&) = default;
 	SignalSet(bool filled = false)
@@ -588,7 +658,9 @@ struct CurrentThread
 /* TODO define in cpp file */
 extern CurrentThread current_thread;
 
-struct SignalFD : FileDescriptor, private Readable
+struct SignalFD :
+	FileDescriptor,
+	private Readable
 {
 	SignalFD(const SignalSet& ss, bool block, Flags flags = Flags::none) :
 		FileDescriptor(signalfd(-1, &ss.get(), (flags & Flags::non_blocking ? EFD_NONBLOCK : 0) | (flags & Flags::close_on_exec ? EFD_CLOEXEC : 0)), "signalfd")
@@ -627,7 +699,9 @@ enum Clock
 	real_time_alarm = CLOCK_REALTIME_ALARM
 };
 
-struct TimerFD : FileDescriptor, private Readable
+struct TimerFD :
+	FileDescriptor,
+	private Readable
 {
 	using TimeSpec = timespec;
 
@@ -653,7 +727,8 @@ struct TimerFD : FileDescriptor, private Readable
 	}
 };
 
-struct EpollFD : FileDescriptor
+struct EpollFD :
+	FileDescriptor
 {
 	enum Events
 	{
@@ -748,24 +823,36 @@ public:
 			exit(ret);
 		}
 	}
-	ChildProcess(pid_t pid) : pid(pid) { }
+	ChildProcess(pid_t pid) :
+		pid(pid)
+	{
+	}
 	ChildProcess(const ChildProcess& f) = delete;
 	void operator = (const ChildProcess& f) = delete;
-	ChildProcess(ChildProcess&& f) : pid(-1) {
+	ChildProcess(ChildProcess&& f) :
+		pid(-1)
+	{
 		std::swap(pid, f.pid);
 	}
-	void operator = (ChildProcess&& f) {
+	void operator = (ChildProcess&& f)
+	{
 		sigkill();
 		std::swap(pid, f.pid);
 	}
-	operator pid_t () const { return pid; }
-	~ChildProcess() {
+	operator pid_t () const
+	{
+		return pid;
+	}
+	~ChildProcess()
+	{
 		sigkill();
 	}
-	void kill(int signo) {
+	void kill(int signo)
+	{
 		assert_zero("kill", ::kill(pid, signo));
 	}
-	int wait(int flags = 0) {
+	int wait(int flags = 0)
+	{
 		int wstatus;
 		assert_not_negative("waitpid", ::waitpid(pid, &wstatus, flags));
 		if (WIFEXITED(wstatus) || WIFSIGNALED(wstatus)) {
@@ -774,7 +861,8 @@ public:
 		return wstatus;
 	}
 private:
-	void sigkill() {
+	void sigkill()
+	{
 		if (pid > 0) {
 			kill(SIGKILL);
 			wait();
