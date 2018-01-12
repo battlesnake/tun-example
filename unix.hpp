@@ -14,6 +14,8 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/eventfd.h>
 #include <sys/signalfd.h>
 #include <sys/timerfd.h>
@@ -21,6 +23,15 @@
 #include <sys/wait.h>
 
 namespace Unix {
+
+using byte_type = char;
+
+enum Flags
+{
+	none = 0,
+	non_blocking = 1,
+	close_on_exec = 2
+};
 
 /* Error handling */
 
@@ -68,6 +79,14 @@ struct SysCallFailed :
 	}
 };
 
+struct InvalidParameter :
+	std::runtime_error
+{
+	using std::runtime_error::runtime_error;
+};
+
+namespace detail {
+
 static void assert_zero(const std::string& call, int ret)
 {
 	if (ret) {
@@ -84,14 +103,34 @@ static size_t assert_not_negative(const std::string& call, ssize_t ret)
 	}
 }
 
-/* Interfaces */
-
-enum Flags
+static std::optional<size_t> try_result(ssize_t value)
 {
-	none = 0,
-	non_blocking = 1,
-	close_on_exec = 2
-};
+	return value >= 0 ? std::make_optional(size_t(value)) : std::nullopt;
+}
+
+static int translate_flags(Flags flags, int non_blocking, int close_on_exec)
+{
+	int ret = 0;
+	if (flags & Flags::non_blocking) {
+		if (non_blocking) {
+			ret |= non_blocking;
+		} else {
+			throw InvalidParameter("Unsupported flag: non-blocking");
+		}
+	}
+	if (flags & Flags::close_on_exec) {
+		if (close_on_exec) {
+			ret |= non_blocking;
+		} else {
+			throw InvalidParameter("Unsupported flag: close_on_exec");
+		}
+	}
+	return ret;
+}
+
+}
+
+/* Interfaces */
 
 struct Closeable
 {
@@ -102,12 +141,28 @@ struct Readable
 {
 	virtual size_t read(void *buf, size_t size) = 0;
 	virtual std::optional<size_t> try_read(void *buf, size_t size) = 0;
+	void read(std::vector<byte_type>& buf)
+	{
+		buf.resize(read(buf.data(), buf.size()));
+	}
+	void try_read(std::vector<byte_type>& buf)
+	{
+		buf.resize(try_read(buf.data(), buf.size()).value_or(0));
+	}
 };
 
 struct Writable
 {
 	virtual size_t write(const void *buf, size_t size) = 0;
 	virtual std::optional<size_t> try_write(const void *buf, size_t size) = 0;
+	void write(const std::vector<byte_type>& buf)
+	{
+		write(buf.data(), buf.size());
+	}
+	std::optional<size_t> try_write(const std::vector<byte_type>& buf)
+	{
+		return try_write(buf.data(), buf.size());
+	}
 };
 
 enum SeekOrigin
@@ -122,11 +177,19 @@ struct Seekable
 	virtual size_t seek(ssize_t displacement, SeekOrigin origin = seek_start) = 0;
 	virtual std::optional<size_t> try_seek(ssize_t displacement, SeekOrigin origin = seek_start) = 0;
 	virtual size_t tell() = 0;
+	size_t seek(size_t displacement)
+	{
+		return seek(ssize_t(displacement), seek_start);
+	}
+	size_t skip(size_t displacement)
+	{
+		return seek(ssize_t(displacement), seek_current);
+	}
 };
 
 struct FD
 {
-	virtual int get() const = 0;
+	virtual int get_fd() const = 0;
 };
 
 /* Syscall implementations */
@@ -138,11 +201,11 @@ struct FileDescriptor :
 private:
 	int fd;
 public:
-	virtual int get() const override
+	virtual int get_fd() const override
 	{
 		return fd;
 	}
-	FileDescriptor(int fd) :
+	explicit FileDescriptor(int fd) :
 		fd(fd)
 	{
 	}
@@ -153,7 +216,7 @@ public:
 	FileDescriptor(int fd, const std::string& call) :
 		FileDescriptor(fd)
 	{
-		assert_not_negative(call, fd);
+		detail::assert_not_negative(call, fd);
 		if (fd == -1) {
 			throw SysCallFailed(call);
 		}
@@ -175,6 +238,13 @@ public:
 		close();
 	}
 
+	int release()
+	{
+		int ret = -1;
+		std::swap(ret, fd);
+		return ret;
+	}
+
 	void close()
 	{
 		if (fd != -1) {
@@ -189,29 +259,43 @@ public:
 		set_nonblock(flags & Flags::non_blocking);
 		set_cloexec(flags & Flags::close_on_exec);
 	}
+
+	template <typename... Args>
+	int fcntl(int cmd, Args&&... args)
+	{
+		return detail::assert_not_negative("fcntl", ::fcntl(fd, cmd, std::forward<Args>(args)...));
+	}
+
+	template <typename... Args>
+	int ioctl(unsigned long request, Args&&... args)
+	{
+		return detail::assert_not_negative("ioctl", ::ioctl(fd, request, std::forward<Args>(args)...));
+	}
+
 	/*
-	 * Race condition when setting, prefer fd-creation functions which allow
-	 * you to set it from the start.
+	 * Race condition with fork() when setting after creation, prefer
+	 * fd-creation functions which allow you to set it from the start,
+	 * e.g: using Flags::non_block.
 	 */
 	void set_cloexec(bool value)
 	{
-		auto flags = fcntl(fd, F_GETFD);
+		auto flags = fcntl(F_GETFD);
 		if (value) {
 			flags |= FD_CLOEXEC;
 		} else {
 			flags &= ~FD_CLOEXEC;
 		}
-		assert_not_negative("fcntl (F_SETFD)", fcntl(fd, F_SETFD, flags));
+		fcntl(F_SETFD, flags);
 	}
 	void set_nonblock(bool value)
 	{
-		auto flags = fcntl(fd, F_GETFL);
+		auto flags = fcntl(F_GETFL);
 		if (value) {
 			flags |= O_NONBLOCK;
 		} else {
 			flags &= ~O_NONBLOCK;
 		}
-		assert_not_negative("fcntl (F_SETFL)", fcntl(fd, F_SETFL, flags));
+		fcntl(F_SETFL, flags);
 	}
 	FileDescriptor dup(int target = -1)
 	{
@@ -229,15 +313,11 @@ struct ReadableFileDescriptor :
 {
 	size_t read(void *buf, size_t size) override
 	{
-		return assert_not_negative("read", ::read(get(), buf, size));
+		return detail::assert_not_negative("read", ::read(get_fd(), buf, size));
 	}
 	std::optional<size_t> try_read(void *buf, size_t size) override
 	{
-		auto res = ::read(get(), buf, size);
-		if (res < 0) {
-			return std::nullopt;
-		}
-		return size_t(res);
+		return detail::try_result(::read(get_fd(), buf, size));
 	}
 };
 
@@ -247,15 +327,11 @@ struct WritableFileDescriptor :
 {
 	size_t write(const void *buf, size_t size) override
 	{
-		return assert_not_negative("write", ::write(get(), buf, size));
+		return detail::assert_not_negative("write", ::write(get_fd(), buf, size));
 	}
 	std::optional<size_t> try_write(const void *buf, size_t size) override
 	{
-		auto res = ::write(get(), buf, size);
-		if (res < 0) {
-			return std::nullopt;
-		}
-		return size_t(res);
+		return detail::try_result(::write(get_fd(), buf, size));
 	}
 };
 
@@ -265,16 +341,11 @@ struct SeekableFileDescriptor :
 {
 	size_t seek(ssize_t displacement, SeekOrigin origin = seek_start) override
 	{
-		return assert_not_negative("lseek", lseek(get(), displacement, origin));
+		return detail::assert_not_negative("lseek", lseek(get_fd(), displacement, origin));
 	}
 	std::optional<size_t> try_seek(ssize_t displacement, SeekOrigin origin = seek_start) override
 	{
-		auto res = lseek(get(), displacement, origin);
-		if (res < 0) {
-			return std::nullopt;
-		} else {
-			return res;
-		}
+		return detail::try_result(lseek(get_fd(), displacement, origin));
 	}
 	size_t tell() override
 	{
@@ -317,7 +388,7 @@ struct File :
 	Stats stat()
 	{
 		Stats s;
-		assert_zero("fstat", fstat(get(), &s));
+		detail::assert_zero("fstat", fstat(get_fd(), &s));
 		return s;
 	}
 	size_t size(bool use_seek = false)
@@ -326,47 +397,13 @@ struct File :
 	}
 	void resize(size_t size)
 	{
-		assert_zero("ftruncate", ftruncate(get(), size));
+		detail::assert_zero("ftruncate", ftruncate(get_fd(), size));
 	}
 private:
 	static int construct(const char *path, FileAccessMode access_mode, FileFlags file_flags, Flags flags, int mode)
 	{
-		int f = int(mode) | int(access_mode) | int(file_flags) | (flags & Flags::non_blocking ? O_NONBLOCK : 0) | (flags & Flags::close_on_exec ? O_CLOEXEC : 0);
+		int f = int(mode) | int(access_mode) | int(file_flags) | detail::translate_flags(flags, O_NONBLOCK, O_CLOEXEC);
 		return open(path, f, mode);
-	}
-};
-
-template <typename Block>
-struct BlockFile :
-	File
-{
-	using block_type = Block;
-	static constexpr auto block_size = sizeof(Block);
-	void read_blocks(std::vector<Block>& buf)
-	{
-		read(buf.data(), buf.size() * block_size);
-	}
-	void write_blocks(const std::vector<Block&> buf)
-	{
-		write(buf.data(), buf.size() * block_size);
-	}
-	void read_blocks_at(ssize_t displacement, SeekOrigin origin, std::vector<Block>& buf)
-	{
-		seek(displacement, origin);
-		read(buf.data(), buf.size() * block_size);
-	}
-	void write_blocks_at(ssize_t displacement, SeekOrigin origin, const std::vector<Block>& buf)
-	{
-		seek(displacement, origin);
-		write(buf.data(), buf.size() * block_size);
-	}
-	size_t length_blocks()
-	{
-		return size() / block_size;
-	}
-	void resize_blocks(size_t count)
-	{
-		resize(count * block_size);
 	}
 };
 
@@ -394,7 +431,7 @@ struct Pipe :
 	Pipe()
 	{
 		int p[2];
-		assert_zero("pipe2", ::pipe2(p, O_NONBLOCK));
+		detail::assert_zero("pipe2", ::pipe2(p, O_NONBLOCK));
 		output = Output{ p[0], "pipe2" };
 		input = Input{ p[1], "pipe2" };
 	}
@@ -427,7 +464,7 @@ struct EventFD :
 	private Writable
 {
 	EventFD(unsigned int initial_value, bool semaphore, Flags flags) :
-		FileDescriptor(eventfd(initial_value, (semaphore ? EFD_SEMAPHORE : 0) | (flags & Flags::non_blocking ? EFD_NONBLOCK : 0) | (flags & Flags::close_on_exec ? EFD_CLOEXEC : 0)), "eventfd")
+		FileDescriptor(eventfd(initial_value, (semaphore ? EFD_SEMAPHORE : 0) | detail::translate_flags(flags, EFD_NONBLOCK, EFD_CLOEXEC)), "eventfd")
 	{
 	}
 protected:
@@ -445,11 +482,7 @@ protected:
 	{
 		uint64_t amount;
 		auto ret = try_read(&amount, sizeof(amount));
-		if (ret.has_value()) {
-			return amount;
-		} else {
-			return std::nullopt;
-		}
+		return ret.has_value() ? std::make_optional(amount) : std::nullopt;
 	}
 };
 
@@ -572,17 +605,17 @@ struct SignalSet
 	sigset_t value;
 	static const SignalSet empty;
 	static const SignalSet full;
-	const sigset_t& get() const
+	const sigset_t& get_fd() const
 	{
 		return value;
 	}
-	SignalSet(const sigset_t& value) :
+	explicit SignalSet(const sigset_t& value) :
 		value(value)
 	{
 	}
 	SignalSet(const SignalSet&) = default;
 	SignalSet& operator =(const SignalSet&) = default;
-	SignalSet(bool filled = false)
+	explicit SignalSet(bool filled = false)
 	{
 		if (filled) {
 			fill();
@@ -592,11 +625,11 @@ struct SignalSet
 	}
 	void add(Signal signal)
 	{
-		assert_zero("sigaddset", sigaddset(&value, signal));
+		detail::assert_zero("sigaddset", sigaddset(&value, signal));
 	}
 	void remove(Signal signal)
 	{
-		assert_zero("sigdelset", sigdelset(&value, signal));
+		detail::assert_zero("sigdelset", sigdelset(&value, signal));
 	}
 	bool has(Signal signal)
 	{
@@ -604,28 +637,28 @@ struct SignalSet
 	}
 	void clear()
 	{
-		assert_zero("sigclearset", sigemptyset(&value));
+		detail::assert_zero("sigclearset", sigemptyset(&value));
 	}
 	void fill()
 	{
-		assert_zero("sigfillset", sigfillset(&value));
+		detail::assert_zero("sigfillset", sigfillset(&value));
 	}
 	SignalSet block() const
 	{
 		sigset_t prev;
-		assert_zero("sigprocmask", sigprocmask(SIG_BLOCK, &value, &prev));
+		detail::assert_zero("sigprocmask", sigprocmask(SIG_BLOCK, &value, &prev));
 		return prev;
 	}
 	SignalSet unblock() const
 	{
 		sigset_t prev;
-		assert_zero("sigprocmask", sigprocmask(SIG_UNBLOCK, &value, &prev));
+		detail::assert_zero("sigprocmask", sigprocmask(SIG_UNBLOCK, &value, &prev));
 		return prev;
 	}
 	SignalSet set_mask() const
 	{
 		sigset_t prev;
-		assert_zero("sigprocmask", sigprocmask(SIG_SETMASK, &value, &prev));
+		detail::assert_zero("sigprocmask", sigprocmask(SIG_SETMASK, &value, &prev));
 		return prev;
 	}
 };
@@ -638,19 +671,19 @@ struct CurrentThread
 	SignalSet signal_block(const SignalSet& ss)
 	{
 		sigset_t prev;
-		assert_zero("sigprocmask", sigprocmask(SIG_BLOCK, &ss.value, &prev));
+		detail::assert_zero("sigprocmask", sigprocmask(SIG_BLOCK, &ss.value, &prev));
 		return prev;
 	}
 	SignalSet signal_unblock(const SignalSet& ss)
 	{
 		sigset_t prev;
-		assert_zero("sigprocmask", sigprocmask(SIG_UNBLOCK, &ss.value, &prev));
+		detail::assert_zero("sigprocmask", sigprocmask(SIG_UNBLOCK, &ss.value, &prev));
 		return prev;
 	}
 	SignalSet signal_setmask(const SignalSet& ss)
 	{
 		sigset_t prev;
-		assert_zero("sigprocmask", sigprocmask(SIG_SETMASK, &ss.value, &prev));
+		detail::assert_zero("sigprocmask", sigprocmask(SIG_SETMASK, &ss.value, &prev));
 		return prev;
 	}
 };
@@ -663,7 +696,7 @@ struct SignalFD :
 	private Readable
 {
 	SignalFD(const SignalSet& ss, bool block, Flags flags = Flags::none) :
-		FileDescriptor(signalfd(-1, &ss.get(), (flags & Flags::non_blocking ? EFD_NONBLOCK : 0) | (flags & Flags::close_on_exec ? EFD_CLOEXEC : 0)), "signalfd")
+		FileDescriptor(signalfd(-1, &ss.get_fd(), detail::translate_flags(flags, EFD_NONBLOCK, EFD_CLOEXEC)), "signalfd")
 	{
 		if (block) {
 			current_thread.signal_block(ss);
@@ -671,7 +704,7 @@ struct SignalFD :
 	}
 	void update(const SignalSet& ss)
 	{
-		assert_not_negative("signalfd", signalfd(get(), &ss.get(), 0));
+		detail::assert_not_negative("signalfd", signalfd(get_fd(), &ss.get_fd(), 0));
 	}
 	signalfd_siginfo take_signal()
 	{
@@ -682,11 +715,7 @@ struct SignalFD :
 	std::optional<signalfd_siginfo> try_take_signal()
 	{
 		signalfd_siginfo ssi;
-		if (try_read(&ssi, sizeof(ssi)).has_value()) {
-			return ssi;
-		} else {
-			return std::nullopt;
-		}
+		return try_read(&ssi, sizeof(ssi)).has_value() ? std::make_optional(ssi) : std::nullopt;
 	}
 };
 
@@ -706,7 +735,7 @@ struct TimerFD :
 	using TimeSpec = timespec;
 
 	TimerFD(Clock clock, Flags flags = Flags::none) :
-		FileDescriptor(timerfd_create(clock, (flags & Flags::non_blocking ? TFD_NONBLOCK : 0) | (flags & Flags::close_on_exec ? TFD_CLOEXEC : 0)), "timerfd_create")
+		FileDescriptor(timerfd_create(clock, detail::translate_flags(flags, TFD_NONBLOCK, TFD_CLOEXEC)), "timerfd_create")
 	{
 	}
 
@@ -715,7 +744,7 @@ struct TimerFD :
 		itimerspec ts;
 		ts.it_value = deadline;
 		ts.it_interval = { 0, 0 };
-		assert_zero("timerfd_settime", timerfd_settime(get(), TFD_TIMER_ABSTIME | (cancel_on_set ? TFD_TIMER_CANCEL_ON_SET : 0), &ts, NULL));
+		detail::assert_zero("timerfd_settime", timerfd_settime(get_fd(), TFD_TIMER_ABSTIME | (cancel_on_set ? TFD_TIMER_CANCEL_ON_SET : 0), &ts, NULL));
 	}
 
 	void set_periodic(const TimeSpec& base, const TimeSpec& interval)
@@ -723,7 +752,7 @@ struct TimerFD :
 		itimerspec ts;
 		ts.it_value = base;
 		ts.it_interval = interval;
-		assert_zero("timerfd_settime", timerfd_settime(get(), 0, &ts, NULL));
+		detail::assert_zero("timerfd_settime", timerfd_settime(get_fd(), 0, &ts, NULL));
 	}
 };
 
@@ -768,17 +797,17 @@ public:
 		power_opt_exclusive = EPOLLEXCLUSIVE
 	};
 	EpollFD(Flags flags = Flags::none) :
-		FileDescriptor(epoll_create1((flags & close_on_exec ? EPOLL_CLOEXEC : 0)), "epoll_create1")
+		FileDescriptor(epoll_create1(detail::translate_flags(flags, 0, EPOLL_CLOEXEC)), "epoll_create1")
 	{
 	}
 	void bind(const FileDescriptor& fd, Handler handler, Events events, Trigger trigger = trigger_level, PowerOptions power_options = power_opt_none)
 	{
-		auto it = handlers.insert_or_assign(fd.get(), std::move(handler));
+		auto it = handlers.insert_or_assign(fd.get_fd(), std::move(handler));
 		epoll_event ee;
 		ee.events = int(events) | int(trigger) | int(power_options);
-		ee.data.fd = fd.get();
+		ee.data.fd = fd.get_fd();
 		try {
-			assert_zero("epoll_ctl", epoll_ctl(get(), EPOLL_CTL_ADD, fd.get(), &ee));
+			detail::assert_zero("epoll_ctl", epoll_ctl(get_fd(), EPOLL_CTL_ADD, fd.get_fd(), &ee));
 		} catch (SystemError& e) {
 			handlers.erase(it.first);
 			throw;
@@ -788,19 +817,19 @@ public:
 	{
 		epoll_event ee;
 		ee.events = int(events) | int(trigger) | int(power_options);
-		ee.data.fd = fd.get();
-		assert_zero("epoll_ctl", epoll_ctl(get(), EPOLL_CTL_MOD, fd.get(), &ee));
+		ee.data.fd = fd.get_fd();
+		detail::assert_zero("epoll_ctl", epoll_ctl(get_fd(), EPOLL_CTL_MOD, fd.get_fd(), &ee));
 	}
 	void unbind(const FileDescriptor& fd)
 	{
-		assert_zero("epoll_ctl", epoll_ctl(get(), EPOLL_CTL_DEL, fd.get(), NULL));
-		handlers.erase(fd.get());
+		detail::assert_zero("epoll_ctl", epoll_ctl(get_fd(), EPOLL_CTL_DEL, fd.get_fd(), NULL));
+		handlers.erase(fd.get_fd());
 	}
 	int wait(int max_events = 1, int timeout = -1, const std::optional<SignalSet>& signal_mask = std::nullopt)
 	{
 		std::vector<epoll_event> events;
 		events.resize(max_events);
-		auto count = assert_not_negative("epoll_wait", epoll_pwait(get(), events.data(), events.size(), timeout, signal_mask.has_value() ? &signal_mask->get() : nullptr));
+		auto count = detail::assert_not_negative("epoll_wait", epoll_pwait(get_fd(), events.data(), events.size(), timeout, signal_mask.has_value() ? &signal_mask->get_fd() : nullptr));
 		events.resize(count);
 		for (const auto& event : events) {
 			auto& handler = handlers.at(event.data.fd);
@@ -810,20 +839,186 @@ public:
 	}
 };
 
-class ChildProcess
+struct Socket :
+	FileDescriptor
 {
+	enum Domain
+	{
+		domain_unix = AF_UNIX,
+		domain_local = AF_LOCAL,
+		domain_ipv4 = AF_INET,
+		domain_ipv6 = AF_INET6,
+		domain_ipx = AF_IPX,
+		domain_netlink = AF_NETLINK,
+		domain_x25 = AF_X25,
+		domain_ax25 = AF_AX25,
+		domain_atm_pvc = AF_ATMPVC,
+		domain_appletalk = AF_APPLETALK,
+		domain_raw_packet = AF_PACKET,
+		domain_crypto = AF_ALG
+	};
+	enum Type
+	{
+		type_stream = SOCK_STREAM,
+		type_datagram = SOCK_DGRAM,
+		type_seq_packet = SOCK_SEQPACKET,
+		type_raw = SOCK_RAW,
+		type_rdm = SOCK_RDM
+	};
+	enum RecvFlags
+	{
+		recv_default = 0,
+		recv_cmsg_close_on_exec = MSG_CMSG_CLOEXEC,
+		recv_dont_wait = MSG_DONTWAIT,
+		recv_error_from_queue = MSG_ERRQUEUE,
+		recv_oob = MSG_OOB,
+		recv_peek = MSG_PEEK,
+		recv_truncate = MSG_TRUNC,
+		recv_wait_all = MSG_WAITALL
+	};
+	enum SendFlags
+	{
+		send_default = 0,
+		send_confirm = MSG_CONFIRM,
+		send_direct = MSG_DONTROUTE,
+		send_dont_wait = MSG_DONTWAIT,
+		send_delimit = MSG_EOR,
+		send_have_more = MSG_MORE,
+		send_no_sigpipe = MSG_NOSIGNAL,
+		send_oob = MSG_OOB
+	};
+	struct Address
+	{
+		socklen_t length;
+		struct sockaddr address;
+	};
+	Socket(Domain domain, Type type, Flags flags = Flags::none, int protocol = 0) :
+		FileDescriptor(socket(int(domain), int(type) | detail::translate_flags(flags, SOCK_NONBLOCK, SOCK_CLOEXEC), protocol), "socket")
+	{
+	}
 protected:
+	explicit Socket(int fd) :
+		FileDescriptor(fd)
+	{
+	}
+};
+
+struct ReadableSocket :
+	virtual Socket,
+	ReadableFileDescriptor
+{
+	using RecvFlags = Socket::RecvFlags;
+	using Address = Socket::Address;
+	size_t recv(void *buf, size_t size, RecvFlags flags = RecvFlags::recv_default)
+	{
+		return detail::assert_not_negative("recv", ::recv(get_fd(), buf, size, int(flags)));
+	}
+	size_t recv(void *buf, size_t size, Address& sender, RecvFlags flags = RecvFlags::recv_default)
+	{
+		return detail::assert_not_negative("recvfrom", ::recvfrom(get_fd(), buf, size, int(flags), &sender.address, &sender.length));
+	}
+	std::optional<size_t> try_recv(void *buf, size_t size, RecvFlags flags = RecvFlags::recv_default)
+	{
+		return detail::assert_not_negative("recv", ::recv(get_fd(), buf, size, int(flags)));
+	}
+	std::optional<size_t> try_recv(void *buf, size_t size, Address& sender, RecvFlags flags = RecvFlags::recv_default)
+	{
+		return detail::assert_not_negative("recvfrom", ::recvfrom(get_fd(), buf, size, int(flags), &sender.address, &sender.length));
+	}
+protected:
+	ReadableSocket() :
+		Socket(-1)
+	{
+	}
+};
+
+struct WritableSocket :
+	virtual Socket,
+	WritableFileDescriptor
+{
+	using SendFlags = Socket::SendFlags;
+	using Address = Socket::Address;
+	size_t send(void *buf, size_t size, SendFlags flags = SendFlags::send_default)
+	{
+		return detail::assert_not_negative("send", ::send(get_fd(), buf, size, int(flags)));
+	}
+	size_t send(void *buf, size_t size, const Address& sender, SendFlags flags = SendFlags::send_default)
+	{
+		return detail::assert_not_negative("sendto", ::sendto(get_fd(), buf, size, int(flags), &sender.address, sender.length));
+	}
+	std::optional<size_t> try_send(void *buf, size_t size, SendFlags flags = SendFlags::send_default)
+	{
+		return detail::assert_not_negative("send", ::send(get_fd(), buf, size, int(flags)));
+	}
+	std::optional<size_t> try_send(void *buf, size_t size, const Address& sender, SendFlags flags = SendFlags::send_default)
+	{
+		return detail::assert_not_negative("sendto", ::sendto(get_fd(), buf, size, int(flags), &sender.address, sender.length));
+	}
+protected:
+	WritableSocket() :
+		Socket(-1)
+	{
+	}
+};
+
+struct SocketConnection :
+	virtual Socket,
+	ReadableSocket,
+	WritableSocket
+{
+	using Address = Socket::Address;
+	SocketConnection(Socket&& socket, const Address& address) :
+		Socket(std::move(socket)),
+		address(address)
+	{
+		detail::assert_zero("connect", connect(get_fd(), &address.address, address.length));
+	}
+	const Address& get_address() const
+	{
+		return address;
+	}
+private:
+	friend struct ServerSocket;
+	SocketConnection(int fd, const Address& address) :
+		Socket(fd),
+		address(address)
+	{
+	}
+	Address address;
+};
+
+struct ServerSocket :
+	Socket
+{
+	using Address = Socket::Address;
+	ServerSocket(Socket&& socket, const Address& address, int backlog) :
+		Socket(std::move(socket))
+	{
+		detail::assert_zero("bind", bind(get_fd(), &address.address, address.length));
+		detail::assert_zero("listen", listen(get_fd(), backlog));
+	}
+	SocketConnection accept(Flags flags = Flags::none)
+	{
+		Address address;
+		int fd = detail::assert_not_negative("accept", ::accept4(get_fd(), &address.address, &address.length, detail::translate_flags(flags, SOCK_NONBLOCK, SOCK_CLOEXEC)));
+		return SocketConnection(fd, address);
+	}
+};
+
+struct ChildProcess
+{
+private:
 	pid_t pid;
 public:
-	ChildProcess(const std::function<int()>& child_entry) :
-		pid(assert_not_negative("fork", fork()))
+	explicit ChildProcess(const std::function<int()>& child_entry) :
+		pid(detail::assert_not_negative("fork", fork()))
 	{
 		if (pid == 0) {
 			int ret = child_entry();
 			exit(ret);
 		}
 	}
-	ChildProcess(pid_t pid) :
+	explicit ChildProcess(pid_t pid) :
 		pid(pid)
 	{
 	}
@@ -849,12 +1044,12 @@ public:
 	}
 	void kill(int signo)
 	{
-		assert_zero("kill", ::kill(pid, signo));
+		detail::assert_zero("kill", ::kill(pid, signo));
 	}
 	int wait(int flags = 0)
 	{
 		int wstatus;
-		assert_not_negative("waitpid", ::waitpid(pid, &wstatus, flags));
+		detail::assert_not_negative("waitpid", ::waitpid(pid, &wstatus, flags));
 		if (WIFEXITED(wstatus) || WIFSIGNALED(wstatus)) {
 			pid = -1;
 		}
