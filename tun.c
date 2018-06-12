@@ -17,10 +17,12 @@
 #include "log.h"
 #include "tun.h"
 
+static const char *tundev = "/dev/net/tun";
+
 /* Initialise a TUN instance */
-int tun_fd(const char *dev, char *dev_out)
+int tun_fd(const char *dev, char *dev_out, int flags)
 {
-	int fd = open("/dev/net/tun", O_RDWR | O_NONBLOCK);
+	int fd = open(tundev, O_RDWR | flags);
 	if (fd < 0) {
 		perror("open");
 		return -1;

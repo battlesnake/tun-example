@@ -1,3 +1,5 @@
+#pragma once
+
 #include <string>
 #include <stdexcept>
 #include <functional>
@@ -22,9 +24,9 @@
 #include <sys/epoll.h>
 #include <sys/wait.h>
 
-namespace Unix {
+namespace Linux {
 
-using byte_type = char;
+using byte_type = std::uint8_t;
 
 enum Flags
 {
@@ -32,6 +34,11 @@ enum Flags
 	non_blocking = 1,
 	close_on_exec = 2
 };
+
+inline Flags operator | (Flags a, Flags b)
+{
+	return static_cast<Flags>(static_cast<int>(a) | static_cast<int>(b));
+}
 
 /* Error handling */
 
@@ -53,7 +60,7 @@ struct SystemError :
 	{
 	}
 	SystemError(const std::string& message) :
-		SystemError(message, code)
+		SystemError(message, errno)
 	{
 	}
 	SystemError(int code) :
@@ -311,6 +318,7 @@ struct ReadableFileDescriptor :
 	virtual FD,
 	Readable
 {
+	using Readable::read;
 	size_t read(void *buf, size_t size) override
 	{
 		return detail::assert_not_negative("read", ::read(get_fd(), buf, size));
@@ -325,6 +333,7 @@ struct WritableFileDescriptor :
 	virtual FD,
 	Writable
 {
+	using Writable::write;
 	size_t write(const void *buf, size_t size) override
 	{
 		return detail::assert_not_negative("write", ::write(get_fd(), buf, size));
@@ -364,6 +373,7 @@ enum FileAccessMode
 
 enum FileFlags
 {
+	file_none = 0,
 	file_create = O_CREAT,
 	file_append = O_APPEND,
 	file_truncate = O_TRUNC,
@@ -371,10 +381,7 @@ enum FileFlags
 };
 
 struct File :
-	FileDescriptor,
-	ReadableFileDescriptor,
-	WritableFileDescriptor,
-	SeekableFileDescriptor
+	FileDescriptor
 {
 	using Stats = struct stat;
 	File(const std::string& path, FileAccessMode access_mode, FileFlags file_flags, Flags flags = Flags::none, int mode = 000) :
@@ -382,6 +389,33 @@ struct File :
 	{
 	}
 	File(const std::string& path, int flags, int mode) :
+		FileDescriptor(open(path.c_str(), flags, mode), "open")
+	{
+	}
+	Stats stat()
+	{
+		Stats s;
+		detail::assert_zero("fstat", fstat(get_fd(), &s));
+		return s;
+	}
+private:
+	static int construct(const char *path, FileAccessMode access_mode, FileFlags file_flags, Flags flags, int mode)
+	{
+		int f = int(mode) | int(access_mode) | int(file_flags) | detail::translate_flags(flags, O_NONBLOCK, O_CLOEXEC);
+		return open(path, f, mode);
+	}
+};
+
+struct SeekableFile :
+	FileDescriptor,
+	SeekableFileDescriptor
+{
+	using Stats = struct stat;
+	SeekableFile(const std::string& path, FileAccessMode access_mode, FileFlags file_flags, Flags flags = Flags::none, int mode = 000) :
+		FileDescriptor(construct(path.c_str(), access_mode, file_flags, flags, mode), "open")
+	{
+	}
+	SeekableFile(const std::string& path, int flags, int mode) :
 		FileDescriptor(open(path.c_str(), flags, mode), "open")
 	{
 	}
@@ -647,24 +681,21 @@ struct SignalSet
 	{
 		sigset_t prev;
 		detail::assert_zero("sigprocmask", sigprocmask(SIG_BLOCK, &value, &prev));
-		return prev;
+		return SignalSet(prev);
 	}
 	SignalSet unblock() const
 	{
 		sigset_t prev;
 		detail::assert_zero("sigprocmask", sigprocmask(SIG_UNBLOCK, &value, &prev));
-		return prev;
+		return SignalSet(prev);
 	}
 	SignalSet set_mask() const
 	{
 		sigset_t prev;
 		detail::assert_zero("sigprocmask", sigprocmask(SIG_SETMASK, &value, &prev));
-		return prev;
+		return SignalSet(prev);
 	}
 };
-/* TODO: Move to cpp file */
-const SignalSet SignalSet::empty{false};
-const SignalSet SignalSet::full{true};
 
 struct CurrentThread
 {
@@ -672,28 +703,27 @@ struct CurrentThread
 	{
 		sigset_t prev;
 		detail::assert_zero("sigprocmask", sigprocmask(SIG_BLOCK, &ss.value, &prev));
-		return prev;
+		return SignalSet(prev);
 	}
 	SignalSet signal_unblock(const SignalSet& ss)
 	{
 		sigset_t prev;
 		detail::assert_zero("sigprocmask", sigprocmask(SIG_UNBLOCK, &ss.value, &prev));
-		return prev;
+		return SignalSet(prev);
 	}
 	SignalSet signal_setmask(const SignalSet& ss)
 	{
 		sigset_t prev;
 		detail::assert_zero("sigprocmask", sigprocmask(SIG_SETMASK, &ss.value, &prev));
-		return prev;
+		return SignalSet(prev);
 	}
 };
 
-/* TODO define in cpp file */
 extern CurrentThread current_thread;
 
 struct SignalFD :
 	FileDescriptor,
-	private Readable
+	private ReadableFileDescriptor
 {
 	SignalFD(const SignalSet& ss, bool block, Flags flags = Flags::none) :
 		FileDescriptor(signalfd(-1, &ss.get_fd(), detail::translate_flags(flags, EFD_NONBLOCK, EFD_CLOEXEC)), "signalfd")
@@ -838,6 +868,11 @@ public:
 		return count;
 	}
 };
+
+inline EpollFD::Events operator | (EpollFD::Events a, EpollFD::Events b)
+{
+	return static_cast<EpollFD::Events>(static_cast<int>(a) | static_cast<int>(b));
+}
 
 struct Socket :
 	FileDescriptor

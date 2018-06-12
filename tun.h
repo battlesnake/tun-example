@@ -15,4 +15,4 @@ struct __attribute__((__packed__)) tun_frame
 };
 
 /* Initialise a TUN instance */
-int tun_fd(const char *dev, char *dev_out);
+int tun_fd(const char *dev, char *dev_out, int flags);

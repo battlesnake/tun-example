@@ -1,14 +1,27 @@
-src := $(wildcard *.c)
-obj := $(src:%.c=%.o)
-out := tun
+c_src := $(wildcard *.c)
+cxx_src := $(wildcard *.cpp)
+
+obj := $(c_src:%.c=%.o) $(cxx_src:%.cpp=%.oxx)
+
+out := iplink
 
 O ?= 0
 
-WFLAGS := -Wall -Wextra -Werror
-CFLAGS := $(WFLAGS) -MMD -std=gnu11 -c -O$(O)
-LDFLAGS := $(WFLAGS) -O$(O)
+# Use capabilities (CAP_NET_ADMIN), interferes with valgrind
+SUPPORT_CAP := 1
 
-libs := cap-ng
+WFLAGS := -Wall -Wextra -Werror
+CFLAGS := $(WFLAGS) -MMD -std=gnu11 -c -O$(O) -g
+CXXFLAGS := $(WFLAGS) -MMD -std=gnu++17 -c -O$(O) -g
+LDFLAGS := $(WFLAGS) -O$(O) -g
+
+libs :=
+
+ifeq ($(SUPPORT_CAP),1)
+CFLAGS += -DSUPPORT_CAP
+CXXFLAGS += -DSUPPORT_CAP
+libs += cap-ng
+endif
 
 tmp := .tmp/$(O)
 bin := .bin/$(O)
@@ -27,10 +40,15 @@ clean:
 	rm -f -- tmp bin
 
 $(addprefix $(bin)/,$(out)): $(addprefix $(tmp)/,$(obj))
-	$(CC) $(LDFLAGS) -o $@ $^ $(addprefix -l,$(libs))
+	$(CXX) $(LDFLAGS) -o $@ $^ $(addprefix -l,$(libs))
+ifeq ($(SUPPORT_CAP),1)
 	sudo setcap cap_net_admin=eip $@
+endif
 
 $(tmp)/%.o: %.c
-	gcc $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -o $@ $<
+
+$(tmp)/%.oxx: %.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $<
 
 -include $(wildcard $(tmp)/*.d)
