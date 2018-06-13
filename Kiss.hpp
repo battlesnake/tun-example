@@ -86,7 +86,7 @@ class Decoder
 		std::list<std::vector<std::uint8_t>> packets;
 		for (InputIt& it = begin; it != end; ++it) {
 			const std::uint8_t in = *it;
-			std::uint8_t out;
+			std::uint8_t out = 0; // init here to keep gcc happy
 			/* Can we go from error state to idle */
 			if (state == error) {
 				if (in == Config::FEND) {
