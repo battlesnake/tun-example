@@ -263,7 +263,6 @@ std::tuple<std::uint8_t, void *, size_t> IpLink::read_packet()
 	/* Get packet from queue */
 	buffer = std::move(uart_rx_buf.front());
 	uart_rx_buf.pop_front();
-	hexdump("RX", buffer.data(), buffer.size());
 	/* Validate packet */
 	auto p = static_cast<std::uint8_t *>(buffer.data());
 	auto size = buffer.size();
