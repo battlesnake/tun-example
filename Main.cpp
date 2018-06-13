@@ -1,4 +1,5 @@
 #include <getopt.h>
+#include <unistd.h>
 
 #if defined SUPPORT_CAP
 #include <cap-ng.h>
@@ -15,6 +16,20 @@ int main(int argc, char *argv[])
 
 	if (config.shown_help) {
 		return 0;
+	}
+
+	if (config.daemon) {
+		pid_t p = fork();
+		if (p == -1) {
+			throw std::runtime_error(std::string("fork() failed: ") + strerror(errno));
+		} else if (p > 0) {
+			usleep(100000);
+			int status;
+			if (waitpid(p, &status, WNOHANG) == p && (WIFEXITED(status) || WIFSIGNALED(status))) {
+				return status;
+			}
+			return 0;
+		}
 	}
 
 #if defined SUPPORT_CAP
