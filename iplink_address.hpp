@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <stdexcept>
 
+namespace IpLink {
+
 /* IPv4 only, extend to IPv6 in future */
 class ip_address
 {
@@ -24,6 +26,8 @@ public:
 	operator std::string() const;
 };
 
+}
+
 namespace std {
-	inline string to_string(const ip_address& addr) { return addr; }
+	inline string to_string(const IpLink::ip_address& addr) { return addr; }
 }

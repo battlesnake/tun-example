@@ -4,6 +4,8 @@
 
 #include "iplink_address.hpp"
 
+namespace IpLink {
+
 using namespace std;
 
 static int str(const char *begin, const char *end)
@@ -69,4 +71,6 @@ std::string ip_address::get_mask() const
 ip_address::operator std::string() const
 {
 	return get_address() + '/' + to_string(length);
+}
+
 }

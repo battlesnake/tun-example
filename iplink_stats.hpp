@@ -3,6 +3,10 @@
 #include <string>
 #include <cstddef>
 
+namespace IpLink {
+
+/* Using X-macro pattern */
+
 #define X_STATS \
 		X(uart_rx_bytes) \
 		X(uart_tx_bytes) \
@@ -33,3 +37,5 @@ public:
 };
 
 #undef X_STATS
+
+}

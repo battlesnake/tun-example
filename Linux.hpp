@@ -35,7 +35,7 @@ enum Flags
 	close_on_exec = 2
 };
 
-inline Flags operator | (Flags a, Flags b)
+inline constexpr Flags operator | (Flags a, Flags b)
 {
 	return static_cast<Flags>(static_cast<int>(a) | static_cast<int>(b));
 }
@@ -647,6 +647,13 @@ struct SignalSet
 		value(value)
 	{
 	}
+	SignalSet(const std::initializer_list<Signal>& signals) :
+		SignalSet(false)
+	{
+		for (const auto signal : signals) {
+			add(signal);
+		}
+	}
 	SignalSet(const SignalSet&) = default;
 	SignalSet& operator =(const SignalSet&) = default;
 	explicit SignalSet(bool filled = false)
@@ -876,7 +883,7 @@ public:
 	}
 };
 
-inline EpollFD::Events operator | (EpollFD::Events a, EpollFD::Events b)
+inline constexpr EpollFD::Events operator | (EpollFD::Events a, EpollFD::Events b)
 {
 	return static_cast<EpollFD::Events>(static_cast<int>(a) | static_cast<int>(b));
 }

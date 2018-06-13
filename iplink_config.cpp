@@ -1,7 +1,9 @@
 #define KEEP_X_CONFIG
 #include "iplink_config.hpp"
 
-bool strtobool(const std::string& s) {
+namespace IpLink {
+
+static bool strtobool(const std::string& s) {
 	if (s == "true" || s == "on" || s == "yes") {
 		return true;
 	} else if (s == "false" || s == "off" || s == "no") {
@@ -11,11 +13,11 @@ bool strtobool(const std::string& s) {
 	}
 }
 
-std::string booltostr(bool b) {
+static std::string booltostr(bool b) {
 	return b ? "yes" : "no";
 }
 
-int strtonatural(const std::string& s)
+static int strtonatural(const std::string& s)
 {
 	char *ep;
 	int ret = strtoul(s.c_str(), &ep, 0);
@@ -116,4 +118,6 @@ void Config::help(std::ostream& os)
 	os << std::endl;
 	dump(os, true);
 	shown_help = true;
+}
+
 }

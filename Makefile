@@ -7,8 +7,12 @@ out := iplink
 
 O ?= 0
 
+CROSS_COMPILER ?=
+CC := $(CROSS_COMPILER)gcc
+CXX := $(CROSS_COMPILER)g++
+
 # Use capabilities (CAP_NET_ADMIN), interferes with valgrind
-SUPPORT_CAP := 1
+SUPPORT_CAP ?= 1
 
 WFLAGS := -Wall -Wextra -Werror
 CFLAGS := $(WFLAGS) -MMD -std=gnu11 -c -O$(O)
@@ -26,9 +30,9 @@ CFLAGS += -g
 CXXFLAGS += -g
 LDFLAGS += -g
 else
-CFLAGS += -s
-CXXFLAGS += -s
-LDFLAGS += -s
+CFLAGS += -s -flto -ffunction-sections -fdata-sections
+CXXFLAGS += -s -flto -ffunction-sections -fdata-sections
+LDFLAGS += -s -flto -Wl,--gc-sections
 endif
 
 ifeq ($(SUPPORT_CAP),1)
