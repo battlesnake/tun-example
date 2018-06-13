@@ -7,9 +7,9 @@ out := iplink
 
 O ?= 0
 
-CROSS_COMPILER ?=
-CC := $(CROSS_COMPILER)gcc
-CXX := $(CROSS_COMPILER)g++
+CROSS ?=
+CC := $(CROSS)gcc
+CXX := $(CROSS)g++
 
 # Use capabilities (CAP_NET_ADMIN), interferes with valgrind
 SUPPORT_CAP ?= 1
