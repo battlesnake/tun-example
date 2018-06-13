@@ -1,4 +1,4 @@
-#include <linux/if.h>
+#include <net/if.h>
 
 extern "C" {
 #include "if.h"

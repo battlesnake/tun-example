@@ -2,7 +2,7 @@
 #include <memory>
 #include <utility>
 
-#include <linux/if.h>
+#include <net/if.h>
 
 extern "C" {
 #include "tun.h"

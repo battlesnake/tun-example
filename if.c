@@ -11,7 +11,7 @@
 
 #include <arpa/inet.h>
 
-#include <linux/if.h>
+#include <net/if.h>
 
 #include "tun.h"
 

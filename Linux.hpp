@@ -24,6 +24,10 @@
 #include <sys/epoll.h>
 #include <sys/wait.h>
 
+#if ! defined TFD_TIMER_CANCEL_ON_SET
+#define TFD_TIMER_CANCEL_ON_SET (1 << 1)
+#endif
+
 namespace Linux {
 
 using byte_type = std::uint8_t;
