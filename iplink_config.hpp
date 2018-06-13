@@ -14,6 +14,8 @@
 		X(ifname, string, "uart0", string, string, "TUN interface name") \
 		X(mtu, int, 115200/32, strtonatural, std::to_string, "Interface MTU") \
 		X(addr, ip_address, "10.101.0.1/30", ip_address, std::to_string, "Local IP address") \
+		X(keepalive_delay, int, 500, strtonatural, std::to_string, "Keep-alive delay in milliseconds") \
+		X(keepalive_limit, int, 3, strtonatural, std::to_string, "Number of missed keep-alive messages before assuming peer has disconnected") \
 		X(verbose, bool, false, strtobool, booltostr, "Enable extra logging")
 
 class Config

@@ -6,7 +6,7 @@
 void hexdump(const char *title, const void *p, size_t len)
 {
 	const char *cp = p;
-	printf("\n%s\n\n", title);
+	printf("%s\n", title);
 	for (size_t i = 0; i < len ; i += STEP) {
 		printf("%04zx |", i);
 		for (size_t j = 0; j < STEP; j++) {

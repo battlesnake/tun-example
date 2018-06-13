@@ -760,7 +760,7 @@ enum Clock
 
 struct TimerFD :
 	FileDescriptor,
-	private Readable
+	private ReadableFileDescriptor
 {
 	using TimeSpec = timespec;
 
@@ -783,6 +783,13 @@ struct TimerFD :
 		ts.it_value = base;
 		ts.it_interval = interval;
 		detail::assert_zero("timerfd_settime", timerfd_settime(get_fd(), 0, &ts, NULL));
+	}
+
+	std::uint64_t read_tick_count()
+	{
+		std::uint64_t count;
+		read(&count, sizeof(count));
+		return count;
 	}
 };
 

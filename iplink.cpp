@@ -51,6 +51,8 @@ int main(int argc, char *argv[])
 
 	const Linux::Flags flags = Linux::close_on_exec | Linux::non_blocking;
 	Linux::SignalFD sfd(ss, true, flags);
+	Linux::TimerFD send_ka(Linux::Clock::monotonic, flags);
+	Linux::TimerFD recv_ka(Linux::Clock::monotonic, flags);
 	Linux::Serial uart(config.uart, config.baud, flags);
 	Linux::Tun tun(config.ifname, flags);
 
@@ -63,6 +65,9 @@ int main(int argc, char *argv[])
 	Stats stats;
 
 	bool terminating = false;
+
+	int missed_keepalives = config.keepalive_limit;
+	bool is_connected = false;
 
 	std::list<std::vector<std::uint8_t>> uart_rx_buf;
 	std::deque<std::uint8_t> uart_tx_buf;
@@ -82,6 +87,27 @@ int main(int argc, char *argv[])
 		if (config.verbose) {
 			hexdump(title, buf, len);
 		}
+	};
+
+	const auto update_timer = [&] (Linux::TimerFD& timer, unsigned delay, unsigned period) {
+		const auto billion = 1000000000L;
+		const auto million = 1000000L;
+		const auto thousand = 1000L;
+
+		Linux::TimerFD::TimeSpec base;
+		clock_gettime(Linux::Clock::monotonic, &base);
+		base.tv_sec += delay / thousand;
+		base.tv_nsec += delay % thousand * million;
+		if (base.tv_nsec >= billion) {
+			base.tv_nsec -= billion;
+			base.tv_sec++;
+		}
+
+		Linux::TimerFD::TimeSpec interval;
+		interval.tv_sec = period / thousand;
+		interval.tv_nsec = period % thousand * million;
+
+		timer.set_periodic(base, interval);
 	};
 
 	const auto update_serial = [&] () {
@@ -112,14 +138,63 @@ int main(int argc, char *argv[])
 		}
 	};
 
+	const auto ka_sent = [&] () {
+		update_timer(send_ka, config.keepalive_delay, config.keepalive_delay);
+	};
+
+	const auto ka_send = [&] () {
+		char *x = nullptr;
+		const auto buf = encoder.encode_packet(x, x);
+		std::copy(buf.cbegin(), buf.cend(), std::back_inserter(uart_tx_buf));
+		verbose_hexdump("[keepalive]", buf.data(), buf.size());
+	};
+
+	const auto ka_recv = [&] () {
+		if (!is_connected) {
+			std::cout << "[peer connected]" << std::endl;
+			is_connected = true;
+		}
+		missed_keepalives = 0;
+		update_timer(recv_ka, config.keepalive_delay, config.keepalive_delay);
+	};
+
+	const auto ka_not_recv = [&] () {
+		if (is_connected) {
+			missed_keepalives++;
+			if (missed_keepalives >= config.keepalive_limit) {
+				is_connected = false;
+				std::cout << "[peer disconnected]" << std::endl;
+			}
+		}
+	};
+
+	const auto on_send_ka_timer = [&] (Events events) {
+		if (events & Events::event_in) {
+			send_ka.read_tick_count();
+			ka_send();
+		}
+	};
+
+	const auto on_recv_ka_timer = [&] (Events events) {
+		if (events & Events::event_in) {
+			recv_ka.read_tick_count();
+			ka_not_recv();
+		}
+	};
+
 	const auto on_serial = [&] (Events events) {
 		if (events & Events::event_in) {
 			buffer.resize(1 << 16);
 			uart.read(buffer);
 			stats.inc_uart_rx_bytes(buffer.size());
 			uart_rx_buf.splice(uart_rx_buf.end(), decoder.decode(buffer));
+			ka_recv();
 		}
 		if (events & Events::event_out) {
+			/*
+			 * Take data from queue and send it, remove sent data
+			 * from queue
+			 */
 			const auto block_size = std::min<std::size_t>(1 << 16, uart_tx_buf.size());
 			buffer.resize(block_size);
 			const auto block_begin = uart_tx_buf.begin();
@@ -129,6 +204,10 @@ int main(int argc, char *argv[])
 			stats.inc_uart_tx_bytes(sent_length);
 			const auto sent_end = block_begin + sent_length;
 			uart_tx_buf.erase(block_begin, sent_end);
+			/* Reset keepalive timer since we've just sent data */
+			if (sent_length > 0) {
+				ka_sent();
+			}
 		}
 		update_tun();
 		update_serial();
@@ -142,21 +221,31 @@ int main(int argc, char *argv[])
 			const auto end = begin + frame.size;
 			const auto buf = encoder.encode_packet(begin, end);
 			std::copy(buf.cbegin(), buf.cend(), std::back_inserter(uart_tx_buf));
-			verbose_hexdump("<", frame.buffer, frame.size);
+			verbose_hexdump("TUN => UART", frame.buffer, frame.size);
 		}
 		if (events & Events::event_out) {
 			const auto buf = std::move(uart_rx_buf.front());
 			uart_rx_buf.pop_front();
-			Frame frame(static_cast<void *>(const_cast<std::uint8_t *>(buf.data())), buf.size());
-			tun.send(frame);
-			stats.inc_tun_tx_frames(1);
-			verbose_hexdump(">", frame.buffer, frame.size);
+			/* Handle message */
+			if (buf.empty()) {
+				/* Keep-alive */
+			} else {
+				Frame frame(static_cast<void *>(const_cast<std::uint8_t *>(buf.data())), buf.size());
+				tun.send(frame);
+				stats.inc_tun_tx_frames(1);
+				verbose_hexdump("UART <= TUN", frame.buffer, frame.size);
+			}
 		}
 		update_tun();
 		update_serial();
 	};
 
+	update_timer(send_ka, 0, config.keepalive_delay);
+	update_timer(recv_ka, 0, config.keepalive_delay);
+
 	epfd.bind(sfd, on_signal, Events::event_in);
+	epfd.bind(send_ka, on_send_ka_timer, Events::event_in);
+	epfd.bind(recv_ka, on_recv_ka_timer, Events::event_in);
 	epfd.bind(uart, on_serial, Events::event_in);
 	epfd.bind(tun, on_packet, Events::event_in);
 
