@@ -39,9 +39,8 @@ void IpLink::update_meter()
 	auto rx_rate = rx_meter.rate();
 	auto tx_rate = tx_meter.rate();
 	std::cerr << "\r\x1b[K";
-	std::cerr << "  [rx:" << format_si(rx_total, "B", 3) << " @ " << format_si(rx_rate, "B/s", 3) << "]  ";
-	std::cerr << "  [tx:" << format_si(tx_total, "B", 3) << " @ " << format_si(tx_rate, "B/s", 3) << "]  ";
-	std::cerr << "{" << rx_total << ", " << rx_rate << "}  ";
+	std::cerr << "  [rx:" << format_si(rx_total, "B", 3) << " @ " << format_si(rx_rate, "B/s", 3) << "]";
+	std::cerr << "  [tx:" << format_si(tx_total, "B", 3) << " @ " << format_si(tx_rate, "B/s", 3) << "]";
 }
 
 void IpLink::set_tun_updown(bool value)
