@@ -1,5 +1,5 @@
 #define KEEP_X_CONFIG
-#include "iplink_config.hpp"
+#include "Config.hpp"
 
 namespace IpLink {
 

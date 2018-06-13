@@ -2,7 +2,7 @@
 #include <cstring>
 #include <iostream>
 
-#include "iplink_address.hpp"
+#include "IpAddress.hpp"
 
 namespace IpLink {
 

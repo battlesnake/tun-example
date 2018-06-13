@@ -4,23 +4,7 @@
 #include <cap-ng.h>
 #endif
 
-#include <iostream>
-
-#include <list>
-#include <deque>
-#include <vector>
-
-#include "Linux.hpp"
-#include "Serial.hpp"
-#include "Tun.hpp"
-
-#include "Kiss.hpp"
-
 #include "IpLink.hpp"
-
-extern "C" {
-#include "hexdump.h"
-}
 
 /*** Program ***/
 
@@ -42,4 +26,6 @@ int main(int argc, char *argv[])
 	IpLink::IpLink iplink(config);
 
 	iplink.run();
+
+	return 0;
 }

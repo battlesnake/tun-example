@@ -12,8 +12,8 @@
 
 #include "Kiss.hpp"
 
-#include "iplink_config.hpp"
-#include "iplink_stats.hpp"
+#include "Config.hpp"
+#include "Stats.hpp"
 
 namespace IpLink {
 

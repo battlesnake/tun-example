@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <regex>
 
-#include "iplink_address.hpp"
+#include "IpAddress.hpp"
 
 namespace IpLink {
 
