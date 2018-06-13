@@ -13,6 +13,8 @@
 
 namespace Kiss {
 
+using Buffer = std::vector<std::uint8_t>;
+
 struct Config
 {
 	static constexpr std::uint8_t FEND = 0xc0;
@@ -23,40 +25,44 @@ struct Config
 
 class Encoder
 {
-	template <typename InputIt>
-	std::vector<std::uint8_t> encode_internal(InputIt begin, InputIt end)
+public:
+	template <typename OutputIt>
+	OutputIt open(OutputIt oit)
 	{
-		std::vector<std::uint8_t> packet;
-		packet = std::vector<std::uint8_t>();
-		packet.push_back(Config::FEND);
+		*oit++ = Config::FEND;
+		return oit;
+	}
+
+	template <typename OutputIt>
+	OutputIt close(OutputIt oit)
+	{
+		*oit++ = Config::FEND;
+		return oit;
+	}
+
+	template <typename InputIt, typename OutputIt>
+	OutputIt write(InputIt begin, InputIt end, OutputIt oit)
+	{
 		for (InputIt& it = begin; it != end; ++it) {
 			const std::uint8_t byte = *it;
 			if (byte == Config::FEND) {
-				packet.push_back(Config::FESC);
-				packet.push_back(Config::TFEND);
+				*oit++ = Config::FESC;
+				*oit++ = Config::TFEND;
 			} else if (byte == Config::FESC) {
-				packet.push_back(Config::FESC);
-				packet.push_back(Config::TFESC);
+				*oit++ = Config::FESC;
+				*oit++ = Config::TFESC;
 			} else {
-				packet.push_back(byte);
+				*oit++ = byte;
 			}
 		}
-		packet.push_back(Config::FEND);
-		return packet;
+		return oit;
 	}
 
-public:
-
-	template <typename InputIt>
-	std::vector<std::uint8_t> encode_packet(InputIt begin, InputIt end)
+	template <typename OutputIt>
+	OutputIt write(const void *buf, std::size_t len, OutputIt oit)
 	{
-		return encode_internal(begin, end);
-	}
-
-	template <typename Container>
-	std::vector<std::uint8_t> encode_packet(const Container& container)
-	{
-		return encode_internal(container.cbegin(), container.cend());
+		const char *p = static_cast<const char *>(buf);
+		return write(p, p + len, oit);
 	}
 };
 

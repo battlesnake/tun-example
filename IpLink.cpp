@@ -1,12 +1,22 @@
 extern "C" {
 #include "hexdump.h"
+#include "checksum.h"
 }
+
+#include <iostream>
+#include <iomanip>
+
+#include <arpa/inet.h>
 
 #include "IpLink.hpp"
 
 namespace IpLink {
 
 using namespace Linux;
+
+/* Frame types */
+static constexpr std::uint8_t ft_keepalive = 0x01;
+static constexpr std::uint8_t ft_ip_packet = 0x02;
 
 void IpLink::verbose_hexdump(const char *title, const void *buf, size_t len)
 {
@@ -106,9 +116,8 @@ void IpLink::rebind_events()
 
 void IpLink::send_keepalive()
 {
-	char *x = nullptr;
-	const auto buf = encoder.encode_packet(x, x);
-	std::copy(buf.cbegin(), buf.cend(), std::back_inserter(uart_tx_buf));
+	write_packet(ft_keepalive, &ft_keepalive, 1);
+
 	rebind_serial_events();
 	on_sent_keepalive();
 }
@@ -225,30 +234,89 @@ void IpLink::on_tun_readable()
 	if (tun_up) {
 		stats.inc_tun_rx_frames(1);
 		stats.inc_tun_rx_bytes(frame.size - sizeof(struct tun_frame_info));
-		const auto begin = reinterpret_cast<const std::uint8_t *>(frame.buffer);
-		const auto end = begin + frame.size;
-		const auto buf = encoder.encode_packet(begin, end);
-		std::copy(buf.cbegin(), buf.cend(), std::back_inserter(uart_tx_buf));
-		verbose_hexdump("TUN => UART", frame.buffer, frame.size);
+
+		write_packet(ft_ip_packet, frame.buffer, frame.size);
+
+		verbose_hexdump("TUN ==> UART", frame.buffer, frame.size);
 	} else {
 		stats.inc_tun_rx_ignored_frames(1);
 		stats.inc_tun_rx_ignored_bytes(frame.size - sizeof(struct tun_frame_info));
 	}
 }
 
+void IpLink::write_packet(std::uint8_t frame_type, const void *data, size_t size)
+{
+	auto oit = std::back_inserter(uart_tx_buf);
+	oit = encoder.open(oit);
+	/* Write packet type */
+	oit = encoder.write(&frame_type, 1, oit);
+	/* Write payload */
+	oit = encoder.write(data, size, oit);
+	/* Write checksum */
+	const std::uint32_t cs = htonl(calc_checksum(data, size) ^ frame_type);
+	oit = encoder.write(&cs, sizeof(cs), oit);
+	oit = encoder.close(oit);
+}
+
+std::tuple<std::uint8_t, void *, size_t> IpLink::read_packet()
+{
+	/* Get packet from queue */
+	buffer = std::move(uart_rx_buf.front());
+	uart_rx_buf.pop_front();
+	hexdump("RX", buffer.data(), buffer.size());
+	/* Validate packet */
+	auto p = static_cast<std::uint8_t *>(buffer.data());
+	auto size = buffer.size();
+	if (size < 5) {
+		std::cerr << "TOOSMALL: " << size << std::endl;
+		verbose_hexdump("UART =!> TUN [invalid length]", buffer.data(), buffer.size());
+		stats.inc_uart_rx_errors(1);
+		return { 0, nullptr, 0 };
+	}
+	std::uint8_t frame_type = *p;
+	/* Verify checksum */
+	std::uint32_t cs_expect = ntohl(*static_cast<std::uint32_t *>(static_cast<void *>(&p[size - 4])));
+	p++;
+	size -= 5;
+	std::uint32_t cs_actual = calc_checksum(p, size) ^ frame_type;
+	if (cs_expect != cs_actual) {
+		std::cerr << "CSFAIL: " << std::hex << cs_expect << " != " << cs_actual << std::dec << std::endl;
+		verbose_hexdump("UART =!> TUN [checksum fail]", buffer.data(), buffer.size());
+		stats.inc_uart_rx_errors(1);
+		return { 0, nullptr, 0 };
+	}
+	return { frame_type, p, size };
+}
+
 void IpLink::on_tun_writable()
 {
-	const auto buf = std::move(uart_rx_buf.front());
-	uart_rx_buf.pop_front();
-	/* Handle message */
-	if (buf.empty()) {
-		/* Keep-alive, ignore */
-	} else {
-		Frame frame(static_cast<void *>(const_cast<std::uint8_t *>(buf.data())), buf.size());
+	std::uint8_t frame_type;
+	void *data;
+	std::size_t size;
+	std::tie(frame_type, data, size) = read_packet();
+	if (data == nullptr) {
+		return;
+	}
+	if (frame_type == ft_keepalive) {
+		on_received_keepalive();
+	} else if (frame_type == ft_ip_packet) {
+		if (size < 20 + sizeof(struct tun_frame_info)) {
+			stats.inc_uart_rx_errors(1);
+			std::cerr << "TOOSMALLIP: " << size << std::endl;
+			verbose_hexdump("UART =!> TUN [invalid IP packet length]", data, size);
+			return;
+		}
+		on_received_keepalive();
+		Frame frame(data, size);
 		tun.send(frame);
 		stats.inc_tun_tx_frames(1);
 		stats.inc_tun_tx_bytes(frame.size - sizeof(struct tun_frame_info));
-		verbose_hexdump("UART <= TUN", frame.buffer, frame.size);
+		verbose_hexdump("UART ==> TUN", frame.buffer, frame.size);
+	} else {
+		stats.inc_uart_rx_errors(1);
+		std::cerr << "INVALIDTYPE: " << frame_type << std::endl;
+		verbose_hexdump("UART =!> TUN [invalid type]", data, size);
+		return;
 	}
 }
 

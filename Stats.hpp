@@ -10,6 +10,7 @@ namespace IpLink {
 #define X_STATS \
 		X(uart_rx_bytes) \
 		X(uart_tx_bytes) \
+		X(uart_rx_errors) \
 		\
 		X(tun_rx_bytes) \
 		X(tun_tx_bytes) \
