@@ -50,6 +50,9 @@ void Config::parse_args(int argc, char *argv[], std::ostream& os)
 		key = key.substr(2);
 		if (key == "help") {
 			help(os);
+		} else if (key == "dump") {
+			dump(os, false);
+			shown_help = true;
 		} else {
 			if (i == argc) {
 				throw parse_error("Missing parameter for argument: " + key);
@@ -113,11 +116,25 @@ void Config::help(std::ostream& os)
 {
 	os << "# Arguments can be specified in config file as <arg = value> or on command line as <--arg value>" << std::endl;
 	os << "# Special arguments" << std::endl;
-	os << "#   --help        : to display help / dump config" << std::endl;
+	os << "#   --help        : to display help and annotated config" << std::endl;
+	os << "#   --dump        : to dump config to standard output" << std::endl;
 	os << "#   --config path : to load configuration from a config file" << std::endl;
 	os << std::endl;
 	dump(os, true);
 	shown_help = true;
+}
+
+void Config::validate() const
+{
+	if (mtu < 64) {
+		throw std::runtime_error("MTU is too small");
+	}
+	if (keepalive_interval > 0 && keepalive_limit <= 1) {
+		throw std::runtime_error("Invalid arguments: To enable keep-alives, the limit must be greater than one");
+	}
+	if (updown && keepalive_interval <= 0) {
+		throw std::runtime_error("Invalid arguments: \"updown\" requires keepalives to be enabled");
+	}
 }
 
 }

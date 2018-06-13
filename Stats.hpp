@@ -10,8 +10,14 @@ namespace IpLink {
 #define X_STATS \
 		X(uart_rx_bytes) \
 		X(uart_tx_bytes) \
+		\
+		X(tun_rx_bytes) \
+		X(tun_tx_bytes) \
+		X(tun_rx_ignored_bytes) \
+		\
 		X(tun_rx_frames) \
-		X(tun_tx_frames)
+		X(tun_tx_frames) \
+		X(tun_rx_ignored_frames)
 
 class Stats
 {

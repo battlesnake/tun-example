@@ -52,8 +52,11 @@ class IpLink
 	void set_tun_updown(bool value);
 	void peer_state_changed(bool value);
 
-	void update_timer(Linux::TimerFD& timer, unsigned delay, unsigned period);
+	void update_timer(Linux::TimerFD& timer, unsigned delay);
+	void reset_send_ka_timer();
+	void reset_recv_ka_timer();
 
+	void rebind_events();
 	void rebind_serial_events();
 	void rebind_tun_events();
 

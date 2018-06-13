@@ -18,9 +18,9 @@ namespace IpLink {
 		X(ifname, string, "uart0", string, string, "TUN interface name") \
 		X(mtu, int, 115200/32, strtonatural, std::to_string, "Interface MTU") \
 		X(addr, ip_address, "10.101.0.1/30", ip_address, std::to_string, "Local IP address") \
-		X(keepalive_interval, int, 500, strtonatural, std::to_string, "Keep-alive interval in milliseconds") \
-		X(keepalive_limit, int, 3, strtonatural, std::to_string, "Number of missed keep-alive messages before assuming peer has disconnected") \
-		X(updown, bool, false, strtobool, booltostr, "Set TUN up/down in response to peer connection/disconnection") \
+		X(keepalive_interval, int, 500, strtonatural, std::to_string, "Keep-alive interval in milliseconds (zero to disable)") \
+		X(keepalive_limit, int, 3, strtonatural, std::to_string, "Number of missed keep-alive messages before assuming peer has disconnected (limit must be greater than one if enabled)") \
+		X(updown, bool, false, strtobool, booltostr, "Set TUN up/down in response to peer connection/disconnection (requires keep-alives to be enabled)") \
 		X(verbose, bool, false, strtobool, booltostr, "Enable extra logging")
 
 class Config
@@ -50,6 +50,8 @@ public:
 
 	void help(std::ostream& os);
 	bool shown_help = false;
+
+	void validate() const;
 };
 
 #if ! defined KEEP_X_CONFIG

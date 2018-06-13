@@ -41,6 +41,8 @@ void IpLink::peer_state_changed(bool value)
 	} else {
 		std::cout << "[peer disconnected]" << std::endl;
 		is_connected = false;
+		uart_rx_buf.clear();
+		uart_tx_buf.clear();
 	}
 	is_connected = value;
 	if (config.updown) {
@@ -48,26 +50,38 @@ void IpLink::peer_state_changed(bool value)
 	}
 }
 
-void IpLink::update_timer(Linux::TimerFD& timer, unsigned delay, unsigned period)
+void IpLink::update_timer(Linux::TimerFD& timer, unsigned delay)
 {
-	const auto billion = 1000000000L;
-	const auto million = 1000000L;
-	const auto thousand = 1000L;
-
-	Linux::TimerFD::TimeSpec base;
-	clock_gettime(Linux::Clock::monotonic, &base);
-	base.tv_sec += delay / thousand;
-	base.tv_nsec += delay % thousand * million;
-	if (base.tv_nsec >= billion) {
-		base.tv_nsec -= billion;
-		base.tv_sec++;
+	if (delay == 0) {
+		return;
 	}
 
-	Linux::TimerFD::TimeSpec interval;
-	interval.tv_sec = period / thousand;
-	interval.tv_nsec = period % thousand * million;
+	constexpr auto billion = 1'000'000'000L;
+	constexpr auto million = 1'000'000L;
+	constexpr auto thousand = 1'000L;
 
-	timer.set_periodic(base, interval);
+	Linux::TimerFD::TimeSpec deadline;
+	clock_gettime(Linux::Clock::monotonic, &deadline);
+	deadline.tv_sec += delay / thousand;
+	deadline.tv_nsec += delay % thousand * million;
+	if (deadline.tv_nsec >= billion) {
+		deadline.tv_nsec -= billion;
+		deadline.tv_sec++;
+	}
+
+	timer.set_absolute(deadline, true);
+}
+
+void IpLink::reset_send_ka_timer()
+{
+	send_ka.try_read_tick_count();
+	update_timer(send_ka, config.keepalive_interval);
+}
+
+void IpLink::reset_recv_ka_timer()
+{
+	recv_ka.try_read_tick_count();
+	update_timer(recv_ka, config.keepalive_interval);
 }
 
 void IpLink::rebind_serial_events()
@@ -84,17 +98,24 @@ void IpLink::rebind_tun_events()
 		(tun_up && !uart_rx_buf.empty() ? Events::event_out : Events::event_none));
 }
 
+void IpLink::rebind_events()
+{
+	rebind_tun_events();
+	rebind_serial_events();
+}
+
 void IpLink::send_keepalive()
 {
 	char *x = nullptr;
 	const auto buf = encoder.encode_packet(x, x);
 	std::copy(buf.cbegin(), buf.cend(), std::back_inserter(uart_tx_buf));
+	rebind_serial_events();
 	on_sent_keepalive();
 }
 
 void IpLink::on_sent_keepalive()
 {
-	update_timer(send_ka, config.keepalive_interval, config.keepalive_interval);
+	reset_send_ka_timer();
 	verbose_hexdump("[keepalive]", NULL, 0);
 }
 
@@ -102,7 +123,7 @@ void IpLink::on_received_keepalive()
 {
 	peer_state_changed(true);
 	missed_keepalives = 0;
-	update_timer(recv_ka, config.keepalive_interval, config.keepalive_interval);
+	reset_recv_ka_timer();
 }
 
 void IpLink::on_missed_keepalive()
@@ -142,6 +163,7 @@ void IpLink::on_recv_ka_timer(Events events)
 	if (events & Events::event_in) {
 		recv_ka.read_tick_count();
 		on_missed_keepalive();
+		reset_recv_ka_timer();
 	}
 }
 
@@ -153,8 +175,7 @@ void IpLink::on_serial(Events events)
 	if (events & Events::event_out) {
 		on_serial_writable();
 	}
-	rebind_tun_events();
-	rebind_serial_events();
+	rebind_events();
 }
 
 void IpLink::on_tun(Events events)
@@ -165,8 +186,7 @@ void IpLink::on_tun(Events events)
 	if (events & Events::event_out) {
 		on_tun_writable();
 	}
-	rebind_tun_events();
-	rebind_serial_events();
+	rebind_events();
 }
 
 void IpLink::on_serial_readable()
@@ -202,12 +222,18 @@ void IpLink::on_serial_writable()
 void IpLink::on_tun_readable()
 {
 	const auto frame = tun.recv();
-	stats.inc_tun_rx_frames(1);
-	const auto begin = reinterpret_cast<const std::uint8_t *>(frame.buffer);
-	const auto end = begin + frame.size;
-	const auto buf = encoder.encode_packet(begin, end);
-	std::copy(buf.cbegin(), buf.cend(), std::back_inserter(uart_tx_buf));
-	verbose_hexdump("TUN => UART", frame.buffer, frame.size);
+	if (tun_up) {
+		stats.inc_tun_rx_frames(1);
+		stats.inc_tun_rx_bytes(frame.size - sizeof(struct tun_frame_info));
+		const auto begin = reinterpret_cast<const std::uint8_t *>(frame.buffer);
+		const auto end = begin + frame.size;
+		const auto buf = encoder.encode_packet(begin, end);
+		std::copy(buf.cbegin(), buf.cend(), std::back_inserter(uart_tx_buf));
+		verbose_hexdump("TUN => UART", frame.buffer, frame.size);
+	} else {
+		stats.inc_tun_rx_ignored_frames(1);
+		stats.inc_tun_rx_ignored_bytes(frame.size - sizeof(struct tun_frame_info));
+	}
 }
 
 void IpLink::on_tun_writable()
@@ -221,11 +247,17 @@ void IpLink::on_tun_writable()
 		Frame frame(static_cast<void *>(const_cast<std::uint8_t *>(buf.data())), buf.size());
 		tun.send(frame);
 		stats.inc_tun_tx_frames(1);
+		stats.inc_tun_tx_bytes(frame.size - sizeof(struct tun_frame_info));
 		verbose_hexdump("UART <= TUN", frame.buffer, frame.size);
 	}
 }
 
 static constexpr Linux::Flags flags = Linux::close_on_exec | Linux::non_blocking;
+
+#define bind_handler(method) \
+	[this] (auto events) { \
+		method(events); \
+	}
 
 IpLink::IpLink(const Config& config) :
 	config(config),
@@ -234,30 +266,31 @@ IpLink::IpLink(const Config& config) :
 	recv_ka(Linux::Clock::monotonic, flags),
 	uart(config.uart, config.baud, flags),
 	tun(config.ifname, flags),
+	epfd(Flags::close_on_exec),
 	decoder(sizeof(struct tun_frame_info) + config.mtu)
 {
-	using namespace std::placeholders;
-
 	tun.set_point_to_point(true);
 	tun.set_mtu(config.mtu);
 	tun.set_addr(config.addr.get_address(), config.addr.get_mask());
 	// tun.set_route(remote_addr, 1, remote_addr, link_mask);
 
+	epfd.bind(sfd, bind_handler(on_signal), Events::event_in);
+	epfd.bind(send_ka, bind_handler(on_send_ka_timer), Events::event_in);
+	epfd.bind(recv_ka, bind_handler(on_recv_ka_timer), Events::event_in);
+	epfd.bind(uart, bind_handler(on_serial), Events::event_in);
+	epfd.bind(tun, bind_handler(on_tun), Events::event_in);
+
 	if (!config.updown) {
 		set_tun_updown(true);
 	}
-
-	epfd.bind(sfd, std::bind(&IpLink::on_signal, this, _1), Events::event_in);
-	epfd.bind(send_ka, std::bind(&IpLink::on_send_ka_timer, this, _1), Events::event_in);
-	epfd.bind(recv_ka, std::bind(&IpLink::on_recv_ka_timer, this, _1), Events::event_in);
-	epfd.bind(uart, std::bind(&IpLink::on_serial, this, _1), Events::event_in);
-	epfd.bind(tun, std::bind(&IpLink::on_tun, this, _1), Events::event_in);
 }
 
 void IpLink::run()
 {
-	update_timer(send_ka, 0, config.keepalive_interval);
-	update_timer(recv_ka, 0, config.keepalive_interval);
+	reset_send_ka_timer();
+	reset_recv_ka_timer();
+	send_keepalive();
+	rebind_events();
 	while (!terminating) {
 		epfd.wait();
 	}

@@ -798,6 +798,12 @@ struct TimerFD :
 		read(&count, sizeof(count));
 		return count;
 	}
+
+	std::uint64_t try_read_tick_count()
+	{
+		std::uint64_t count;
+		return try_read(&count, sizeof(count)).has_value() ? count : 0;
+	}
 };
 
 struct EpollFD :
