@@ -11,11 +11,25 @@ O ?= 0
 SUPPORT_CAP := 1
 
 WFLAGS := -Wall -Wextra -Werror
-CFLAGS := $(WFLAGS) -MMD -std=gnu11 -c -O$(O) -g
-CXXFLAGS := $(WFLAGS) -MMD -std=gnu++17 -c -O$(O) -g
-LDFLAGS := $(WFLAGS) -O$(O) -g
+CFLAGS := $(WFLAGS) -MMD -std=gnu11 -c -O$(O)
+CXXFLAGS := $(WFLAGS) -MMD -std=gnu++17 -c -O$(O)
+LDFLAGS := $(WFLAGS) -O$(O)
 
 libs :=
+
+ifeq ($(O),0)
+CFLAGS += -g
+CXXFLAGS += -g
+LDFLAGS += -g
+else ifeq ($(O),g)
+CFLAGS += -g
+CXXFLAGS += -g
+LDFLAGS += -g
+else
+CFLAGS += -s
+CXXFLAGS += -s
+LDFLAGS += -s
+endif
 
 ifeq ($(SUPPORT_CAP),1)
 CFLAGS += -DSUPPORT_CAP
