@@ -12,6 +12,8 @@
 
 #include "Kiss.hpp"
 
+#include "Meter.hpp"
+
 #include "Config.hpp"
 #include "Stats.hpp"
 
@@ -25,11 +27,15 @@ class IpLink
 	const Config& config;
 
 	Linux::SignalFD sfd;
+	Linux::TimerFD meter_timer;
 	Linux::TimerFD send_ka;
 	Linux::TimerFD recv_ka;
 	Linux::Serial uart;
 	Linux::Tun tun;
 	Linux::EpollFD epfd;
+
+	Meter<std::size_t, float> rx_meter;
+	Meter<std::size_t, float> tx_meter;
 
 	Stats stats{};
 
@@ -54,6 +60,8 @@ class IpLink
 
 	void verbose_hexdump(const char *title, const void *buf, size_t len);
 
+	void update_meter();
+
 	void set_tun_updown(bool value);
 	void peer_state_changed(bool value);
 
@@ -66,6 +74,7 @@ class IpLink
 	void rebind_tun_events();
 
 	void on_signal(Events events);
+	void on_update_meter(Events events);
 	void on_send_ka_timer(Events events);
 	void on_recv_ka_timer(Events events);
 	void on_serial(Events events);

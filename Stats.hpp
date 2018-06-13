@@ -41,6 +41,10 @@ public:
 	X_STATS;
 #undef X
 
+#define X(name) std::size_t get_##name() { return name; }
+	X_STATS;
+#undef X
+
 };
 
 #undef X_STATS

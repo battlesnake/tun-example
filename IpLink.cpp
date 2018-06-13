@@ -8,6 +8,8 @@ extern "C" {
 
 #include <arpa/inet.h>
 
+#include "format_si.hpp"
+
 #include "IpLink.hpp"
 
 namespace IpLink {
@@ -23,6 +25,23 @@ void IpLink::verbose_hexdump(const char *title, const void *buf, size_t len)
 	if (config.verbose) {
 		hexdump(title, buf, len);
 	}
+}
+
+void IpLink::update_meter()
+{
+	auto rx_total = stats.get_uart_rx_bytes();
+	auto tx_total = stats.get_uart_tx_bytes();
+	rx_meter.write(rx_total);
+	tx_meter.write(tx_total);
+	if (rx_meter.size() < 2 || tx_meter.size() < 2) {
+		return;
+	}
+	auto rx_rate = rx_meter.rate();
+	auto tx_rate = tx_meter.rate();
+	std::cerr << "\r\x1b[K";
+	std::cerr << "  [rx:" << format_si(rx_total, "B", 3) << " @ " << format_si(rx_rate, "B/s", 3) << "]  ";
+	std::cerr << "  [tx:" << format_si(tx_total, "B", 3) << " @ " << format_si(tx_rate, "B/s", 3) << "]  ";
+	std::cerr << "{" << rx_total << ", " << rx_rate << "}  ";
 }
 
 void IpLink::set_tun_updown(bool value)
@@ -156,6 +175,14 @@ void IpLink::on_signal(Events events)
 			stats.print(std::cout);
 			break;
 		}
+	}
+}
+
+void IpLink::on_update_meter(Events events)
+{
+	if (events & Events::event_in) {
+		meter_timer.read_tick_count();
+		update_meter();
 	}
 }
 
@@ -329,6 +356,7 @@ static constexpr Linux::Flags flags = Linux::close_on_exec | Linux::non_blocking
 IpLink::IpLink(const Config& config) :
 	config(config),
 	sfd({ sig_int, sig_term, sig_quit, sig_usr1 }, true, flags),
+	meter_timer(Linux::Clock::monotonic, flags),
 	send_ka(Linux::Clock::monotonic, flags),
 	recv_ka(Linux::Clock::monotonic, flags),
 	uart(config.uart, config.baud, flags),
@@ -342,6 +370,7 @@ IpLink::IpLink(const Config& config) :
 	// tun.set_route(remote_addr, 1, remote_addr, link_mask);
 
 	epfd.bind(sfd, bind_handler(on_signal), Events::event_in);
+	epfd.bind(meter_timer, bind_handler(on_update_meter), Events::event_in);
 	epfd.bind(send_ka, bind_handler(on_send_ka_timer), Events::event_in);
 	epfd.bind(recv_ka, bind_handler(on_recv_ka_timer), Events::event_in);
 	epfd.bind(uart, bind_handler(on_serial), Events::event_in);
@@ -354,12 +383,26 @@ IpLink::IpLink(const Config& config) :
 
 void IpLink::run()
 {
+	if (config.meter) {
+		rx_meter = { 15, 0.5 };
+		tx_meter = { 15, 0.5 };
+		Linux::TimerFD::TimeSpec now;
+		now.tv_sec = 0;
+		now.tv_nsec = 1;
+		Linux::TimerFD::TimeSpec interval;
+		interval.tv_sec = 0;
+		interval.tv_nsec = 500000000;
+		meter_timer.set_periodic(now, interval);
+	}
 	reset_send_ka_timer();
 	reset_recv_ka_timer();
 	send_keepalive();
 	rebind_events();
 	while (!terminating) {
 		epfd.wait();
+	}
+	if (config.meter) {
+		std::cerr << std::endl;
 	}
 }
 

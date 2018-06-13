@@ -21,8 +21,9 @@ namespace IpLink {
 		X(keepalive_interval, int, 500, strtonatural, std::to_string, "Keep-alive interval in milliseconds (zero to disable)") \
 		X(keepalive_limit, int, 3, strtonatural, std::to_string, "Number of missed keep-alive messages before assuming peer has disconnected (limit must be greater than one if enabled)") \
 		X(updown, bool, false, strtobool, booltostr, "Set TUN up/down in response to peer connection/disconnection (requires keep-alives to be enabled)") \
+		X(daemon, bool, false, strtobool, booltostr, "Fork to background") \
 		X(verbose, bool, false, strtobool, booltostr, "Enable extra logging") \
-		X(daemon, bool, false, strtobool, booltostr, "Fork to background")
+		X(meter, bool, false, strtobool, booltostr, "Display data meter")
 
 class Config
 {

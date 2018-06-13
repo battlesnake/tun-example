@@ -7,6 +7,8 @@
 
 #include "IpLink.hpp"
 
+#include "format_si.hpp"
+
 /*** Program ***/
 
 int main(int argc, char *argv[])
